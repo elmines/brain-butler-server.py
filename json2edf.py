@@ -13,7 +13,10 @@ def process_header(writer, header):
 		writer.setLabel(i, label)
 	for (i, freq) in enumerate(header["sampleFrequency"]):
 		writer.setSamplefrequency(i, freq)
-
+	for (i, prefilter) in enumerate(header["prefilter"]):
+		writer.setPrefilter(i, prefilter);
+	for (i, dimension) in enumerate(header["physicalDimension"]):
+		writer.setPhysicalDimension(i, dimension)
 	writer.setStartdatetime( parse_edf_datetime(header["startDate"], header["startTime"]) )
 
 
