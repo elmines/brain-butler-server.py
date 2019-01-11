@@ -1,0 +1,9 @@
+#Files for light debugging
+*json
+*edf
+*sh
+header.py
+
+#Files for printing out the pyedflib methods
+api_r.py
+api_w.py
