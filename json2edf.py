@@ -18,6 +18,7 @@ def process_header(writer, header):
 	for (i, dimension) in enumerate(header["physicalDimension"]):
 		writer.setPhysicalDimension(i, dimension)
 	writer.setStartdatetime( parse_edf_datetime(header["startDate"], header["startTime"]) )
+	writer.setPatientCode(header["patientCode"])
 
 
 assert len(sys.argv) >= 3
