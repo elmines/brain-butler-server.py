@@ -1,17 +1,8 @@
 import json
-import asyncio
-import websockets
-import netifaces
 import datetime
-
 #Local libraries
 import eeg
 import rl
-
-lan_ip = netifaces.ifaddresses("wlo1")[netifaces.AF_INET][0]["addr"]
-port = 8080
-print("Serving from ws://{}:{}".format(lan_ip, port))
-
 
 class Server(object):
 	"""
@@ -24,19 +15,7 @@ class Server(object):
 		self.header_provided = None
 		self.data_records = 0
 
-	def processData(self, packet):
-		if self.data_records > 0: self.curr_file.write(",")
-		self.curr_file.write( json.dumps(packet["body"])[1:-1] )
-		self.data_records += 1
-		if eeg.errp(packet["body"]): return self.agent.act(None)
-
-	def processEvent(self, packet):
-		if self.data_records > 0: self.curr_file.write(",")
-		self.curr_file.write( json.dumps(packet["body"]) ) #Keep the curly braces
-		self.data_records += 1
-
-
-	def receive_packet(self, packet):
+	def receivePacket(self, packet):
 		"""
 		Description
 
@@ -56,19 +35,28 @@ class Server(object):
 		if packet["type"] == "eof":
 			self._reset_globals()
 			return None
-
 		if not self.header_provided:
-			print("Header has not been provided--rejecting record")
+			print("Header has not been provided--rejecting packet")
 			return None
 
 		if packet["type"] == "data":
-			return self.processData(packet)
+			return self._processData(packet)
 		if packet["type"] == "event":
-			return self.processEvent(packet)
+			return self._processEvent(packet)
 
 		print(f'Received packet of unknown type {packet["type"]}--rejecting')
 		return None
 
+	def _processData(self, packet):
+		if self.data_records > 0: self.curr_file.write(",")
+		self.curr_file.write( json.dumps(packet["body"])[1:-1] )
+		self.data_records += 1
+		if eeg.errp(packet["body"]): return self.agent.act(None)
+
+	def _processEvent(self, packet):
+		if self.data_records > 0: self.curr_file.write(",")
+		self.curr_file.write( json.dumps(packet["body"]) ) #Keep the curly braces
+		self.data_records += 1
 
 	#PRIVATE
 	def _reset_globals(self):
@@ -76,7 +64,7 @@ class Server(object):
 		self.curr_file = None
 		self.header_provided = False
 		self.data_records = 0
-		self.agent = rl.Agent()
+		self.agent = None
 	@staticmethod
 	def _begin_file():
 		curr_file = Server._new_outfile()
@@ -93,21 +81,3 @@ class Server(object):
 		data_file.write("}") #End root object
 		data_file.close()
 		print(f"Closed outfile {data_file.name}")
-
-
-
-bb_server = Server()
-async def print_message(websocket, path):
-	global bb_server
-	async for message in websocket:
-		json_obj = json.loads(message)
-		reply = bb_server.receive_packet(json_obj)
-		if reply:
-			reply = {"action": reply};
-			print(f"About to send {reply}");
-			await websocket.send(json.dumps(reply))
-
-
-asyncio.get_event_loop().run_until_complete( websockets.serve(print_message, lan_ip, port) )
-asyncio.get_event_loop().run_forever()
-
