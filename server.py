@@ -10,10 +10,7 @@ class Server(object):
 	"""
 
 	def __init__(self):
-		self.agent = None
-		self.curr_file = None
-		self.header_provided = None
-		self.data_records = 0
+		self._reset_members()
 
 	def receivePacket(self, packet):
 		"""
@@ -21,19 +18,21 @@ class Server(object):
 
 		:param dict(str, obj) packet: The header, data, etc., packet
 
-		:rtype: str
-		:returns: The action that the RL agent is taking,
-			or None if the agent is not taking a formal action
+		:rtype: (int, str)
+		:returns: An (id, action) tuple
 		"""
 		if packet["type"] == "header":
-			self._reset_globals()
+			self._reset_members()
 			self.header_provided = True
+
+			self.agent = rl.Bandit()
+
 			self.curr_file = Server._begin_file()
 			self.curr_file.write('\"header\":{}'.format( json.dumps(packet["body"]) ))
 			self.curr_file.write(', \"data\":[')
 			return None
 		if packet["type"] == "eof":
-			self._reset_globals()
+			self._reset_members()
 			return None
 		if not self.header_provided:
 			print("Header has not been provided--rejecting packet")
@@ -43,6 +42,12 @@ class Server(object):
 			return self._processData(packet)
 		if packet["type"] == "event":
 			return self._processEvent(packet)
+		if packet["type"] == "reward":
+			id = packet["body"]["id"]
+			r = packet["body"]["r"]
+			print(f"Reward for action {id}: {r}")
+			self.agent.reward(id, r)
+			return None
 
 		print(f'Received packet of unknown type {packet["type"]}--rejecting')
 		return None
@@ -51,20 +56,33 @@ class Server(object):
 		if self.data_records > 0: self.curr_file.write(",")
 		self.curr_file.write( json.dumps(packet["body"])[1:-1] )
 		self.data_records += 1
-		if eeg.errp(packet["body"]): return self.agent.act(None)
+		if eeg.errp(packet["body"]):
+			if len(self.state) < 2:
+				print("State not yet fully initialized")
+			(id, action) = self.agent.act(self.state)
+			print(f"Taking action {id}: {action}")
+			return (id, action)
+
+		return None
 
 	def _processEvent(self, packet):
 		if self.data_records > 0: self.curr_file.write(",")
 		self.curr_file.write( json.dumps(packet["body"]) ) #Keep the curly braces
 		self.data_records += 1
 
+		eventName = packet["body"]["eventName"]
+		eventVal = packet["body"][eventName]
+		self.state[eventName] = eventVal
+
 	#PRIVATE
-	def _reset_globals(self):
-		if self.curr_file: Server._end_file(self.curr_file)
+	def _reset_members(self):
+		if hasattr(self, "curr_file") and self.curr_file:
+			Server._end_file(self.curr_file)
 		self.curr_file = None
 		self.header_provided = False
 		self.data_records = 0
 		self.agent = None
+		self.state = {}
 	@staticmethod
 	def _begin_file():
 		curr_file = Server._new_outfile()

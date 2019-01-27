@@ -17,8 +17,7 @@ async def print_message(websocket, path):
 		json_obj = json.loads(message)
 		reply = bb_server.receivePacket(json_obj)
 		if reply:
-			reply = {"action": reply};
-			print(f"About to send {reply}");
+			reply = {"id": reply[0], "action": reply[1]};
 			await websocket.send(json.dumps(reply))
 
 
