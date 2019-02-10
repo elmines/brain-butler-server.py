@@ -14,7 +14,8 @@ states = {
 	"orientation": ["portrait", "landscape"],
 	"brightness": ["full", "low"]
 }
-historyTimeout = 2000 #Number of milliseconds of events to record
+historyTimeout = 5000 #Number of milliseconds of events to record
+minHistoryLength = 2 #Minimum number of events to have in the history
 
 class Server(object):
 	"""
@@ -39,7 +40,7 @@ class Server(object):
 			self.sess = tf.Session()
 
 			self.model_a = erp.ml.convolution( [256, 4], 2)
-			contextChannels = sum(len(states[key]) for key in states)
+			contextChannels = 2
 			self.model_b = erp.ml.convolution( [256, 4 + contextChannels], 2)
 
 			self.sess.run(tf.global_variables_initializer())
@@ -63,44 +64,68 @@ class Server(object):
 		print(f'Received packet of unknown type {packet["type"]}--rejecting')
 		return None
 
-	def _contextVector(contextType, length, width, startTime, endTime):
+	def _contextVector(self, component, length, startTime, endTime):
 		"""
-		:param str contextType: What type of vector we're generating (\"brightness\", \"orientation\", etc.)
+		:param str component: What type of vector we're generating (\"brightness\", \"orientation\", etc.)
 		:param int length: Size of time dimension
-		:param int width: Number of features/classes
 		:param int startTime: start time in milliseconds
 		:param int endTime: end time in milliseconds
 		"""
-		width = endTime - startTime
-		pass
+		duration = endTime - startTime
+		history = self.history[component]
+
+		width = len(states[component])
+		if width < 3: width = 1
+		vector = np.squeeze(np.zeros( [length, width] ))
+
+		endIndex = length
+		for (value, timestamp) in reversed(history):
+			startIndex = int( (timestamp - startTime)/duration * length )
+			if startIndex < 0: startIndex = 0
+			stateIndex = states[component].index(value)
+			if width == 1: vector[startIndex:endIndex] = stateIndex
+			else:          vector[startIndex:endIndex, stateIndex] = 1
+			endIndex = startIndex
+		return vector
 
 	def _processData(self, packet):
 		if self.dataRecords > 0: self.currFile.write(",")
 		self.currFile.write( json.dumps(packet["body"])[1:-1] )
 		self.dataRecords += 1
 
-		timestamp = packet["body"][0]["timestamp"]
+		startTime = packet["body"][0]["timestamp"]
+		endTime = packet["body"][-1]["timestamp"]
 
 		if "orientation" in self.change:
-			orientation = int( self.change["orientation"] >= timestamp )
+			orientation = int( self.change["orientation"][-1] >= startTime )
 		else: orientation = 0
 		if "brightness" in self.change:
-			brightness = int( self.change["brightness"] >= timestamp )
+			brightness = int( self.change["brightness"][-1] >= startTime )
 		else: brightness = 0
 
 		eegOnly    = np.array([ reading["data"] for reading in packet["body"]] )
 
 		act_inputs = np.expand_dims( erp.tools.cleanSample(eegOnly, 80, 256) , 0)
 		act_labels = np.expand_dims( np.array([orientation, brightness]), 0 )
+		(aLoss, aPreds) = self._predict(self.model_a, act_inputs, act_labels)
 
-		sess = self.sess
-		model = self.model_a
+		orientVec = self._contextVector("orientation", 256, startTime, endTime)
+		if orientVec.ndim < 2: orientVec = np.expand_dims(orientVec, -1)
+		orientVec = np.expand_dims(orientVec, 0)
+		brightVec = self._contextVector("brightness", 256, startTime, endTime)
+		if brightVec.ndim < 2: brightVec = np.expand_dims(brightVec, -1)
+		brightVec = np.expand_dims(brightVec, 0)
 
-		(_, loss, predictions) = sess.run([model.train_op, model.loss, model.predictions],
+		act_inputs = np.concatenate([act_inputs, orientVec, brightVec], axis=-1)
+		(bLoss, bPreds) = self._predict(self.model_b, act_inputs, act_labels)
+
+
+	def _predict(self, model, act_inputs, act_labels):
+		(_, loss, predictions) = self.sess.run(
+			[model.train_op, model.loss, model.predictions],
 			{model.inputs: act_inputs, model.labels: act_labels}
 		)
-		print("loss =", loss)
-		print("predictions =", predictions)
+		return (loss, predictions)
 
 
 	def _processEvent(self, packet):
@@ -117,9 +142,6 @@ class Server(object):
 			self.change[eventName] = eventTuple
 		self.history[eventName].append(eventTuple)
 		self._flushOld(self.history[eventName])
-
-		print("history =", self.history)
-		print("change  =", self.change)
 
 
 	def _changed(self, eventName, eventTuple):
@@ -140,7 +162,7 @@ class Server(object):
 		:param deque(tuple(str, int)) buffer: The buffer to flush
 		"""
 		if not buffer: return #Empty buffer
-		while buffer[-1][1] - buffer[0][1] >= historyTimeout:
+		while buffer[-1][1] - buffer[0][1] >= historyTimeout and len(buffer) > minHistoryLength:
 			buffer.popleft()
 
 	def _resetMembers(self):
