@@ -45,9 +45,11 @@ class Server(object):
 
 			self.sess.run(tf.global_variables_initializer())
 
-			self.currFile = Server._beginFile()
-			self.currFile.write('\"header\":{}'.format( json.dumps(packet["body"]) ))
-			self.currFile.write(', \"data\":[')
+			dateString = datetime.datetime.now().strftime("%Y_%m_%d_%I:%M:%S")
+			dataPath = "data_" + dateString + ".json"
+			trainPath = "training_"+dateString + ".json"
+			self.dataFile = _openOutfile(dataPath, packet["body"])
+			self.trainFile = _openOutfile(trainPath, self._trainingHeader())
 			return None
 		if packet["type"] == "eof":
 			self._resetMembers()
@@ -89,8 +91,8 @@ class Server(object):
 		return vector
 
 	def _processData(self, packet):
-		if self.dataRecords > 0: self.currFile.write(",")
-		self.currFile.write( json.dumps(packet["body"])[1:-1] )
+		if self.dataRecords > 0: self.dataFile.write(",")
+		self.dataFile.write( json.dumps(packet["body"])[1:-1] )
 		self.dataRecords += 1
 
 		startTime = packet["body"][0]["timestamp"]
@@ -119,6 +121,15 @@ class Server(object):
 		act_inputs = np.concatenate([act_inputs, orientVec, brightVec], axis=-1)
 		(bLoss, bPreds) = self._predict(self.model_b, act_inputs, act_labels)
 
+		trainRecord = {
+			"labels": act_labels.tolist(),
+			"modelA": {"predictions": aPreds.tolist(), "loss": float(aLoss)},
+			"modelB": {"predictions": bPreds.tolist(), "loss": float(bLoss)}
+		}
+		if self.trainRecords > 0: self.trainFile.write(",")
+		self.trainFile.write(json.dumps(trainRecord))
+		self.trainRecords += 1
+
 
 	def _predict(self, model, act_inputs, act_labels):
 		(_, loss, predictions) = self.sess.run(
@@ -129,8 +140,8 @@ class Server(object):
 
 
 	def _processEvent(self, packet):
-		if self.dataRecords > 0: self.currFile.write(",")
-		self.currFile.write( json.dumps(packet["body"]) ) #Keep the curly braces
+		if self.dataRecords > 0: self.dataFile.write(",")
+		self.dataFile.write( json.dumps(packet["body"]) ) #Keep the curly braces
 		self.dataRecords += 1
 
 		packet = packet["body"]
@@ -165,10 +176,22 @@ class Server(object):
 		while buffer[-1][1] - buffer[0][1] >= historyTimeout and len(buffer) > minHistoryLength:
 			buffer.popleft()
 
+	def _trainingHeader(self):
+		header = {}
+		header["classes"] = {
+			"names": ["rotated", "darkened"],
+			"disjoint": False
+		}
+		return header
+
 	def _resetMembers(self):
-		if hasattr(self, "currFile") and self.currFile:
-			Server._endFile(self.currFile)
-		self.currFile = None
+		if hasattr(self, "dataFile") and self.dataFile:
+			_closeOutfile(self.dataFile)
+		self.dataFile = None
+		if hasattr(self, "trainFile") and self.trainFile:
+			_closeOutfile(self.trainFile)
+		self.trainFile = None
+
 
 		if hasattr(self, "sess") and self.sess:
 			self.sess.close()
@@ -179,6 +202,7 @@ class Server(object):
 
 		self.headerProvided = False
 		self.dataRecords = 0
+		self.trainRecords = 0
 
 		self.history = defaultdict(deque)
 		"""
@@ -195,22 +219,18 @@ class Server(object):
 		Values are the new state, and milliseconds since the epoch
 		"""
 
-
-
-
-	@staticmethod
-	def _beginFile():
-		currFile = Server._newOutfile()
-		currFile.write("{") #Begin root object
-		return currFile
-	@staticmethod
-	def _newOutfile():
-		filename = datetime.datetime.now().strftime("%Y_%m_%d_%I:%M:%S") + ".json"
-		print(f"Opening outfile {filename}")
-		return open(filename, "w")
-	@staticmethod
-	def _endFile(dataFile):
-		dataFile.write("]") #End data
-		dataFile.write("}") #End root object
-		dataFile.close()
-		print(f"Closed outfile {dataFile.name}")
+def _openOutfile(filename, header):
+	print(f"Opening outfile {filename}")
+	f = open(filename, "w")
+	f.write("{") #Begin root object
+	f.write('\"header\":{}'.format(json.dumps(header)))
+	f.write(', \"data\":[')
+	return f
+def _closeOutfile(dataFile):
+	"""
+	:param file dataFile: Pointer to file opened with _openOutfile
+	"""
+	dataFile.write("]") #End data
+	dataFile.write("}") #End root object
+	dataFile.close()
+	print(f"Closed outfile {dataFile.name}")
