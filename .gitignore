@@ -1,4 +1,5 @@
 #Files for light debugging
+*.csv
 *json
 *edf
 *sh
