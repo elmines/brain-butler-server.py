@@ -17,6 +17,36 @@ states = {
 historyTimeout = 5000 #Number of milliseconds of events to record
 minHistoryLength = 2 #Minimum number of events to have in the history
 
+oddballWeight = 4
+
+def conv(shape):
+	"""
+	:param shape: The shape of the inputs (should be [numChannels, samplesPerChannel])
+	:param int classes: The number of different output classes
+	"""
+	inputs = tf.placeholder(tf.float32, (None,) + tuple(shape), name="inputs")
+	classes = 2
+	labels = tf.placeholder(tf.float32, (None, classes), name="labels")
+
+	convolved = tf.layers.conv1d(inputs, filters=6, kernel_size=96, strides=1)
+	pooled = tf.layers.max_pooling1d(convolved, pool_size=3, strides=2)
+	logit = tf.squeeze( tf.layers.dense(tf.layers.flatten(pooled), classes) )
+
+	lossWeights = labels*(oddballWeight-1) + 1
+	loss = tf.losses.sigmoid_cross_entropy(labels, logit, weights=lossWeights)
+
+
+	optimizer = tf.train.AdamOptimizer()
+	train_op = optimizer.minimize(loss)
+	#TESTING
+	#Graph
+	predictions = tf.cast(tf.round(tf.nn.sigmoid(logit)), tf.int32, name="predictions")
+
+	m = erp.ml.Model(inputs=inputs, labels=labels, loss=loss, train_op=train_op,
+		predictions=predictions)
+
+	return  m
+
 class Server(object):
 	"""
 	A single-threaded server for receiving data packets
@@ -39,9 +69,9 @@ class Server(object):
 			self.headerProvided = True
 			self.sess = tf.Session()
 
-			self.model_a = erp.ml.convolution( [256, 4], 2)
+			self.model_a = conv([256, 4])
 			contextChannels = 2
-			self.model_b = erp.ml.convolution( [256, 4 + contextChannels], 2)
+			self.model_b = conv([256, 4 + contextChannels])
 
 			self.sess.run(tf.global_variables_initializer())
 
