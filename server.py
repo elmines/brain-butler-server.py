@@ -18,8 +18,7 @@ historyTimeout = 5000 #Number of milliseconds of events to record
 minHistoryLength = 2 #Minimum number of events to have in the history
 
 oddballWeight = 4
-
-def conv(shape):
+def conv(shape, weighted=False):
 	"""
 	:param shape: The shape of the inputs (should be [numChannels, samplesPerChannel])
 	:param int classes: The number of different output classes
@@ -32,8 +31,11 @@ def conv(shape):
 	pooled = tf.layers.max_pooling1d(convolved, pool_size=3, strides=2)
 	logit = tf.squeeze( tf.layers.dense(tf.layers.flatten(pooled), classes) )
 
-	lossWeights = labels*(oddballWeight-1) + 1
-	loss = tf.losses.sigmoid_cross_entropy(labels, logit, weights=lossWeights)
+	if weighted:
+		lossWeights = labels*(oddballWeight-1) + 1
+		loss = tf.losses.sigmoid_cross_entropy(labels, logit, weights=lossWeights)
+	else:
+		loss = tf.losses.sigmoid_cross_entropy(labels, logit)
 
 
 	optimizer = tf.train.AdamOptimizer()
@@ -70,8 +72,7 @@ class Server(object):
 			self.sess = tf.Session()
 
 			self.model_a = conv([256, 4])
-			contextChannels = 2
-			self.model_b = conv([256, 4 + contextChannels])
+			self.model_b = conv(self._data.shape[1:])
 
 			self.sess.run(tf.global_variables_initializer())
 
@@ -128,19 +129,45 @@ class Server(object):
 		startTime = packet["body"][0]["timestamp"]
 		endTime = packet["body"][-1]["timestamp"]
 
+		eegOnly    = np.array([ reading["data"] for reading in packet["body"]] )
+		eegOnly    = erp.tools.cleanSample(eegOnly, 80, 256)
+
+		actInputs = self._appendContext(eegOnly, startTime, endTime)
+		actLabels = self._deriveLabels(startTime, endTime)
+
+		self._loadData(actInputs, actLabels)
+
+		(aLoss, aPreds) = self._predict(self.model_a,
+										np.expand_dims(eegOnly, 0),
+										np.expand_dims(actLabels, 0)
+		)
+		(bLoss, bPreds) = self._predict(self.model_b,
+										np.expand_dims(actInputs, 0),
+										np.expand_dims(actLabels, 0)
+		)
+
+		trainRecord = {
+			"labels": actLabels.tolist(),
+			"modelA": {"predictions": aPreds.tolist(), "loss": float(aLoss)},
+			"modelB": {"predictions": bPreds.tolist(), "loss": float(bLoss)}
+		}
+		if self.trainRecords > 0: self.trainFile.write(",")
+		self.trainFile.write(json.dumps(trainRecord))
+		self.trainRecords += 1
+
+	def _deriveLabels(self, startTime, endTime):
 		if "orientation" in self.change:
 			orientation = int( self.change["orientation"][-1] >= startTime )
 		else: orientation = 0
 		if "brightness" in self.change:
 			brightness = int( self.change["brightness"][-1] >= startTime )
 		else: brightness = 0
+		actLabels = np.array([orientation, brightness])
+		return actLabels
 
-		eegOnly    = np.array([ reading["data"] for reading in packet["body"]] )
-
-		act_inputs = np.expand_dims( erp.tools.cleanSample(eegOnly, 80, 256) , 0)
-		act_labels = np.expand_dims( np.array([orientation, brightness]), 0 )
-		(aLoss, aPreds) = self._predict(self.model_a, act_inputs, act_labels)
-
+	def _appendContext(self, act_inputs, startTime, endTime):
+		if act_inputs.ndim < 3:
+			act_inputs = np.expand_dims(act_inputs, 0)
 		orientVec = self._contextVector("orientation", 256, startTime, endTime)
 		if orientVec.ndim < 2: orientVec = np.expand_dims(orientVec, -1)
 		orientVec = np.expand_dims(orientVec, 0)
@@ -149,17 +176,16 @@ class Server(object):
 		brightVec = np.expand_dims(brightVec, 0)
 
 		act_inputs = np.concatenate([act_inputs, orientVec, brightVec], axis=-1)
-		(bLoss, bPreds) = self._predict(self.model_b, act_inputs, act_labels)
+		return np.squeeze(act_inputs)
 
-		trainRecord = {
-			"labels": act_labels.tolist(),
-			"modelA": {"predictions": aPreds.tolist(), "loss": float(aLoss)},
-			"modelB": {"predictions": bPreds.tolist(), "loss": float(bLoss)}
-		}
-		if self.trainRecords > 0: self.trainFile.write(",")
-		self.trainFile.write(json.dumps(trainRecord))
-		self.trainRecords += 1
 
+	def _loadData(self, inputs, labels):
+		self._data[self._writeIndex] = inputs
+		self._labels[self._writeIndex] = labels
+		self._writeIndex += 1
+		if self._writeIndex >= self._dataLimit:
+			self._trainReady = True
+			self._writeIndex = 0
 
 	def _predict(self, model, act_inputs, act_labels):
 		(_, loss, predictions) = self.sess.run(
@@ -233,6 +259,14 @@ class Server(object):
 		self.headerProvided = False
 		self.dataRecords = 0
 		self.trainRecords = 0
+
+		self._trainReady = False
+		self._contextChannels = 2
+		self._dataLimit = 32
+		self._writeIndex = 0
+		self._data      = np.ndarray( (self._dataLimit, 256, 4+self._contextChannels) )
+		self._labels    = np.ndarray( (self._dataLimit, 2) )
+
 
 		self.history = defaultdict(deque)
 		"""
