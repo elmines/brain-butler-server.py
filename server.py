@@ -71,8 +71,8 @@ class Server(object):
 			self.headerProvided = True
 			self.sess = tf.Session()
 
-			self.model_a = conv([256, 4])
-			self.model_b = conv(self._data.shape[1:])
+			self.model_a = conv(self._eegData.shape[1:])
+			self.model_b = conv(self._fullData.shape[1:])
 
 			self.sess.run(tf.global_variables_initializer())
 
@@ -125,7 +125,6 @@ class Server(object):
 		if self.dataRecords > 0: self.dataFile.write(",")
 		self.dataFile.write( json.dumps(packet["body"])[1:-1] )
 		self.dataRecords += 1
-
 		startTime = packet["body"][0]["timestamp"]
 		endTime = packet["body"][-1]["timestamp"]
 
@@ -134,26 +133,50 @@ class Server(object):
 
 		actInputs = self._appendContext(eegOnly, startTime, endTime)
 		actLabels = self._deriveLabels(startTime, endTime)
+		self._evalModels(actInputs, actLabels)
 
 		self._loadData(actInputs, actLabels)
+		if self._trainReady: self._trainModels()
 
-		(aLoss, aPreds) = self._predict(self.model_a,
-										np.expand_dims(eegOnly, 0),
-										np.expand_dims(actLabels, 0)
-		)
-		(bLoss, bPreds) = self._predict(self.model_b,
-										np.expand_dims(actInputs, 0),
-										np.expand_dims(actLabels, 0)
-		)
+	def _trainModels(self):
+		self._train(self.model_a, self._eegData, self._labels)
+		self._train(self.model_b, self._fullData, self._labels)
+	def _train(self, model, inputs, labels):
+		self.sess.run([model.train_op], {
+			model.inputs: inputs, model.labels: labels
+		})
 
-		trainRecord = {
-			"labels": actLabels.tolist(),
-			"modelA": {"predictions": aPreds.tolist(), "loss": float(aLoss)},
-			"modelB": {"predictions": bPreds.tolist(), "loss": float(bLoss)}
-		}
+	def _evalModels(self, fullSample, labels):
+		assert type(labels) != list;
+		eegData = fullSample[:, :-self._contextChannels]
+		fullSample = np.expand_dims(fullSample, 0)
+		eegData    = np.expand_dims(eegData, 0)
+		labels = np.expand_dims(labels, 0)
+		assert type(labels) != list;
+
+		aPreds = self._eval(self.model_a, eegData, labels)
+		bPreds = self._eval(self.model_b, fullSample, labels)
+
+		#print("aPreds =", aPreds)
+		#print("bPreds =", bPreds)
+		#print("labels =", labels)
+		labels = labels.tolist()
+		aPreds = aPreds.tolist()
+		bPreds = bPreds.tolist()
+
+		trainRecord = {"labels": labels, "modelA": aPreds, "modelB": bPreds}
+
+		#trainRecord = {"labels": labels.tolist(), "modelA": aPreds.tolist(),
+			#"modelB": bPreds.tolist()
+		#}
 		if self.trainRecords > 0: self.trainFile.write(",")
 		self.trainFile.write(json.dumps(trainRecord))
 		self.trainRecords += 1
+	def _eval(self, model, act_inputs, act_labels):
+		[predictions] = self.sess.run([model.predictions],
+			{model.inputs: act_inputs, model.labels: act_labels}
+		)
+		return predictions
 
 	def _deriveLabels(self, startTime, endTime):
 		if "orientation" in self.change:
@@ -180,19 +203,13 @@ class Server(object):
 
 
 	def _loadData(self, inputs, labels):
-		self._data[self._writeIndex] = inputs
+		self._fullData[self._writeIndex] = inputs
 		self._labels[self._writeIndex] = labels
 		self._writeIndex += 1
 		if self._writeIndex >= self._dataLimit:
 			self._trainReady = True
 			self._writeIndex = 0
 
-	def _predict(self, model, act_inputs, act_labels):
-		(_, loss, predictions) = self.sess.run(
-			[model.train_op, model.loss, model.predictions],
-			{model.inputs: act_inputs, model.labels: act_labels}
-		)
-		return (loss, predictions)
 
 
 	def _processEvent(self, packet):
@@ -262,9 +279,11 @@ class Server(object):
 
 		self._trainReady = False
 		self._contextChannels = 2
-		self._dataLimit = 32
+		self._dataLimit = 8
 		self._writeIndex = 0
-		self._data      = np.ndarray( (self._dataLimit, 256, 4+self._contextChannels) )
+
+		self._fullData  = np.ndarray( (self._dataLimit, 256, 4+self._contextChannels) )
+		self._eegData  = self._fullData[:, :, :-self._contextChannels]
 		self._labels    = np.ndarray( (self._dataLimit, 2) )
 
 
