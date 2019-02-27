@@ -1,4 +1,5 @@
 #Files for light debugging
+*.csv
 *json
 *edf
 *sh
@@ -7,3 +8,5 @@ header.py
 #Files for printing out the pyedflib methods
 api_r.py
 api_w.py
+
+__pycache__/

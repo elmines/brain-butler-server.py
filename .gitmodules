@@ -1,0 +1,3 @@
+[submodule "erp"]
+	path = erp
+	url = https://github.com/elmines/erp.git
