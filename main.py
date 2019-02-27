@@ -3,7 +3,8 @@ import websockets
 import json
 import asyncio
 
-from server import Server
+#from server import Server
+from mth_server import Server
 
 
 lan_ip = netifaces.ifaddresses("wlo1")[netifaces.AF_INET][0]["addr"]
